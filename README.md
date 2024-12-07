@@ -2,6 +2,46 @@
 
 This project fine-tunes the Qwen2-1.5B model for Arabic language tasks using Quantized LoRA (QLoRA).
 
+
+# Qwen-Arabic Evaluation on ArabicMMLU
+
+Eevaluation of the Qwen-Arabic language model (1.5B parameters) on the ArabicMMLU benchmark. The model demonstrates strong parameter efficiency while maintaining competitive performance across various knowledge domains.
+
+## Model Overview
+
+Qwen-Arabic is a 1.5B parameter language model fine-tuned for Arabic language tasks. It is based on the Qwen architecture and optimized using QLoRA (Quantized Low-Rank Adaptation) techniques.
+
+## Performance Results
+
+### Overall Performance
+- Average Accuracy: 42.3%
+- Best Category: Social Science (46.1%)
+- Most Challenging: Arabic Language (37.8%)
+
+### Category-wise Performance
+| Category         | Accuracy (%) |
+|-----------------|--------------|
+| STEM            | 42.2         |
+| Social Science  | 46.1         |
+| Humanities      | 41.8         |
+| Arabic Language | 37.8         |
+| Other           | 42.9         |
+| Average         | 42.3         |
+
+### Efficiency Analysis
+- Performance per Billion Parameters: 28.20 accuracy points
+- 389.0x more parameter-efficient than GPT-4
+- Achieves 58.3% of GPT-4's performance with only 0.15% of parameters
+
+### Comparison with Other Models
+| Model              | Parameters | Average Accuracy | Efficiency Score |
+|-------------------|------------|------------------|------------------|
+| GPT-4             | ~1000B     | 72.5%           | 0.072           |
+| Jais-chat         | 30B        | 62.3%           | 2.077           |
+| AceGPT-chat       | 13B        | 52.6%           | 4.046           |
+| Qwen-Arabic       | 1.5B       | 42.3%           | 28.200          |
+
+
 ## Prerequisites
 
 - Ubuntu (or similar Linux distribution)
