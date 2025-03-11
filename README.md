@@ -193,3 +193,34 @@ This project uses the following main libraries and tools:
 - PEFT (Parameter-Efficient Fine-Tuning)
 - Ollama
 - GGUF (for model conversion)
+
+
+Here's the markdown code specifically for the citation section that you can add to your README.md file:
+
+## Citation
+
+If you use this work in your research, please cite:
+
+```bibtex
+@InProceedings{10.1007/978-3-031-83793-7_27,
+  author="Aryan, Prakash",
+  editor="Verma, Anshul and Verma, Pradeepika and Pattanaik, Kiran Kumar and Buyya, Rajkumar and Dasgupta, Dipankar",
+  title="Resource-Aware Arabic LLM Creation: Model Adaptation, Integration, and Multi-domain Testing",
+  booktitle="Advanced Network Technologies and Intelligent Computing",
+  year="2025",
+  publisher="Springer Nature Switzerland",
+  address="Cham",
+  pages="415--434",
+  abstract="This paper presents a novel approach to fine-tuning the Qwen2-1.5B model for Arabic language processing using Quantized Low-Rank Adaptation (QLoRA) on a system with only 4 GB VRAM. We detail the process of adapting this large language model to the Arabic domain, using diverse datasets including Bactrian, OpenAssistant, and Wikipedia Arabic corpora. Our methodology involves custom data preprocessing, model configuration, and training optimization techniques such as gradient accumulation and mixed-precision training. We address specific challenges in Arabic NLP, including morphological complexity, dialectal variations, and diacritical mark handling. Experimental results over 10,000 training steps show significant performance improvements, with the final loss converging to 0.1083. We provide comprehensive analysis of GPU memory usage, training dynamics, and model evaluation across various Arabic language tasks, including text classification, question answering, and dialect identification. The fine-tuned model demonstrates robustness to input perturbations and improved handling of Arabic-specific linguistic phenomena. This research contributes to multilingual AI by demonstrating a resource-efficient approach for creating specialized language models, potentially democratizing access to advanced NLP technologies for diverse linguistic communities. Our work paves the way for future research in low-resource language adaptation and efficient fine-tuning of large language models.",
+  isbn="978-3-031-83793-7"
+}
+```
+
+**Paper Reference:**
+Aryan, P. (2025). Resource-Aware Arabic LLM Creation: Model Adaptation, Integration, and Multi-domain Testing. In: Verma, A., Verma, P., Pattanaik, K.K., Buyya, R., Dasgupta, D. (eds) Advanced Network Technologies and Intelligent Computing. ANTIC 2024. Communications in Computer and Information Science, vol 2335. Springer, Cham. https://doi.org/10.1007/978-3-031-83793-7_27
+
+**DOI:** https://doi.org/10.1007/978-3-031-83793-7_27  
+**Published:** 08 March 2025  
+**Publisher:** Springer, Cham  
+**Print ISBN:** 978-3-031-83792-0  
+**Online ISBN:** 978-3-031-83793-7
