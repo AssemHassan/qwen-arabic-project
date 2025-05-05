@@ -1,6 +1,7 @@
 # Qwen Arabic Fine-tuning Project
 
-This project fine-tunes the Qwen2-1.5B model for Arabic language tasks using Quantized LoRA (QLoRA).
+This project fine-tunes the Qwen2-1.5B model for Arabic language tasks using Quantized LoRA (QLoRA). [Paper Link](https://doi.org/10.1007/978-3-031-83793-7_27)
+
 
 
 # Qwen-Arabic Evaluation on ArabicMMLU
