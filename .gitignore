@@ -1,1 +1,5 @@
 qwen_env
+data/*
+models/*
+results/*
+src/__pycache__/*

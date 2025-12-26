@@ -28,18 +28,19 @@ from peft import (
     get_peft_model,
     prepare_model_for_kbit_training,
     TaskType,
+    PeftModel,
 )
 from torch.cuda.amp import autocast, GradScaler
 
-import wandb
+from torch.utils.tensorboard import SummaryWriter
 import psutil
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Set environment variable for PyTorch memory allocation
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+data_dir = ""
+output_dir = ""
 
 # Custom TrainOutput class
 class TrainOutput:
@@ -130,11 +131,13 @@ def configure_lora(model, lora_config: LoraConfig):
 
 # Custom trainer with gradient clipping and wandb logging
 class QwenTrainer(Trainer):
-    def __init__(self, *args, max_grad_norm: float = 1.0, tokenizer=None, **kwargs):
+    def __init__(self, *args, max_grad_norm: float = 1.0, tokenizer=None, writer=None, resume_from_checkpoint=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.max_grad_norm = max_grad_norm
         self.scaler = GradScaler()
         self.tokenizer = tokenizer
+        self.writer = writer
+        self.resume_from_checkpoint = resume_from_checkpoint
 
     def training_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]]) -> torch.Tensor:
         model.train()
@@ -167,10 +170,40 @@ class QwenTrainer(Trainer):
             num_train_samples = len(self.train_dataset) * self.args.num_train_epochs
         
         self.create_optimizer_and_scheduler(num_training_steps=num_train_epochs * num_update_steps_per_epoch)
-        
+
         self.state = TrainerState()
         self.state.epoch = 0
         self.state.global_step = 0
+
+        # Load from checkpoint if resuming
+        if self.resume_from_checkpoint:
+            # Load optimizer
+            optimizer_path = os.path.join(self.resume_from_checkpoint, "optimizer.pt")
+            if os.path.exists(optimizer_path):
+                try:
+                    self.optimizer.load_state_dict(torch.load(optimizer_path))
+                    logger.info("Loaded optimizer state")
+                except Exception as e:
+                    logger.warning(f"Failed to load optimizer state: {e}. Starting with fresh optimizer.")
+            # Load scheduler
+            scheduler_path = os.path.join(self.resume_from_checkpoint, "scheduler.pt")
+            if os.path.exists(scheduler_path):
+                try:
+                    self.lr_scheduler.load_state_dict(torch.load(scheduler_path))
+                    logger.info("Loaded scheduler state")
+                except Exception as e:
+                    logger.warning(f"Failed to load scheduler state: {e}. Starting with fresh scheduler.")
+
+            # Load trainer state
+            trainer_state_path = os.path.join(self.resume_from_checkpoint, "trainer_state.json")
+            if os.path.exists(trainer_state_path):
+                with open(trainer_state_path, 'r') as f:
+                    state_dict = json.load(f)
+                self.state.global_step = state_dict.get("global_step", 0)
+                self.state.epoch = state_dict.get("epoch", 0)
+                logger.info(f"Resumed from step {self.state.global_step}, epoch {self.state.epoch}")
+            else:
+                logger.warning("No trainer state found, starting from beginning")
         
         total_loss = 0.0
         logging_loss = 0.0
@@ -189,9 +222,14 @@ class QwenTrainer(Trainer):
                 if (step + 1) % self.args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-                    
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
+
+                    try:
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+                    except AssertionError as e:
+                        logger.warning(f"Scaler step failed: {e}. Performing optimizer step without scaling.")
+                        self.optimizer.step()
+                        self.scaler.update()
                     self.lr_scheduler.step()
                     self.model.zero_grad()
                 
@@ -213,21 +251,35 @@ class QwenTrainer(Trainer):
                     estimated_time_remaining = remaining_steps / steps_per_second
                     
                     logger.info(f"Step {self.state.global_step}: loss = {avg_loss:.4f}, GPU Memory Used: {gpu_memory_used:.2f} GB, GPU Memory Cached: {gpu_memory_cached:.2f} GB, RAM: {ram_used:.2f} GB, Est. Time Remaining: {estimated_time_remaining/3600:.2f} hours")
-                    wandb.log({
-                        "loss": avg_loss,
-                        "learning_rate": self.lr_scheduler.get_last_lr()[0],
-                        "epoch": self.state.epoch,
-                        "step": self.state.global_step,
-                        "gpu_memory_used": gpu_memory_used,
-                        "gpu_memory_cached": gpu_memory_cached,
-                        "ram_used": ram_used,
-                    })
+                    if self.writer:
+                        self.writer.add_scalar("loss", avg_loss, self.state.global_step)
+                        self.writer.add_scalar("learning_rate", self.lr_scheduler.get_last_lr()[0], self.state.global_step)
+                        self.writer.add_scalar("epoch", self.state.epoch, self.state.global_step)
+                        self.writer.add_scalar("gpu_memory_used", gpu_memory_used, self.state.global_step)
+                        self.writer.add_scalar("gpu_memory_cached", gpu_memory_cached, self.state.global_step)
+                        self.writer.add_scalar("ram_used", ram_used, self.state.global_step)
                 
                 if self.state.global_step % self.args.eval_steps == 0:
-                    self.evaluate_and_save_samples(self.state.global_step)
-                
+                     self.evaluate_and_save_samples(self.state.global_step)
+
+                if self.state.global_step % self.args.save_steps == 0:
+                    checkpoint_dir = os.path.join(self.args.output_dir, f"checkpoint-{self.state.global_step}")
+                    os.makedirs(checkpoint_dir, exist_ok=True)
+                    self.save_model(checkpoint_dir)
+                    # Save trainer state
+                    state_dict = {
+                        "global_step": self.state.global_step,
+                        "epoch": self.state.epoch,
+                    }
+                    with open(os.path.join(checkpoint_dir, "trainer_state.json"), "w") as f:
+                        json.dump(state_dict, f)
+                    # Save optimizer and scheduler
+                    torch.save(self.optimizer.state_dict(), os.path.join(checkpoint_dir, "optimizer.pt"))
+                    torch.save(self.lr_scheduler.state_dict(), os.path.join(checkpoint_dir, "scheduler.pt"))
+                    logger.info(f"Saved checkpoint at step {self.state.global_step}")
+                 
                 if self.state.global_step >= self.args.max_steps > 0:
-                    break
+                     break
             
             if self.state.global_step >= self.args.max_steps > 0:
                 break
@@ -254,20 +306,23 @@ class QwenTrainer(Trainer):
             json.dump(outputs, f, ensure_ascii=False, indent=2)
 
 
-def init_wandb(args):
-    wandb.init(
-        project="qwen2-arabic-finetuning",
-        config={
-            "model_name": args.model_name,
-            "epochs": args.num_epochs,
-            "batch_size": args.batch_size,
-            "learning_rate": args.learning_rate,
-            "gradient_accumulation_steps": args.gradient_accumulation_steps,
-            "lora_r": args.lora_r,
-            "lora_alpha": args.lora_alpha,
-            "lora_dropout": args.lora_dropout,
-        }
-    )
+def init_tensorboard(args):
+    runs_path = os.path.join(os.getcwd(), "runs")
+    if not os.path.exists(runs_path):
+        os.makedirs(runs_path)
+    writer = SummaryWriter(log_dir=runs_path)
+    # Log hyperparameters
+    writer.add_hparams({
+        "model_name": args.model_name,
+        "epochs": args.num_epochs,
+        "batch_size": args.batch_size,
+        "learning_rate": args.learning_rate,
+        "gradient_accumulation_steps": args.gradient_accumulation_steps,
+        "lora_r": args.lora_r,
+        "lora_alpha": args.lora_alpha,
+        "lora_dropout": args.lora_dropout,
+    }, {})
+    return writer
 
 def load_test_data(file_path):
     with open(os.path.join('data', file_path), 'r', encoding='utf-8') as f:
@@ -287,26 +342,48 @@ def train(args):
     
     # Load model and tokenizer
     model, tokenizer = load_model_and_tokenizer(args.model_name, bnb_config)
-    
-    # LoRA configuration
-    lora_config = LoraConfig(
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        bias="none",
-        task_type=TaskType.CAUSAL_LM,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"]
-    )
-    
-    # Apply LoRA
-    model = configure_lora(model, lora_config)
-    
+
+    # Resume from checkpoint if specified
+    resume_from_checkpoint = None
+    if args.resume:
+        checkpoints = [d for d in os.listdir(output_dir) if d.startswith("checkpoint-")]
+        if checkpoints:
+            latest_checkpoint = max(checkpoints, key=lambda x: int(x.split("-")[1]))
+            resume_from_checkpoint = os.path.join(output_dir, latest_checkpoint)
+            logger.info(f"Resuming from {resume_from_checkpoint}")
+            model = PeftModel.from_pretrained(model, resume_from_checkpoint)
+        else:
+            logger.warning("No checkpoints found, applying LoRA from scratch")
+            # LoRA configuration
+            lora_config = LoraConfig(
+                r=args.lora_r,
+                lora_alpha=args.lora_alpha,
+                lora_dropout=args.lora_dropout,
+                bias="none",
+                task_type=TaskType.CAUSAL_LM,
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj"]
+            )
+            # Apply LoRA
+            model = configure_lora(model, lora_config)
+    else:
+        # LoRA configuration
+        lora_config = LoraConfig(
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            bias="none",
+            task_type=TaskType.CAUSAL_LM,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"]
+        )
+        # Apply LoRA
+        model = configure_lora(model, lora_config)
+
     # Load and prepare data
-    train_dataset, val_dataset = load_and_prepare_data(args.data_path, tokenizer, args.test_size)
+    train_dataset, val_dataset = load_and_prepare_data(data_path, tokenizer, args.test_size)
     
     # Training arguments
     training_args = TrainingArguments(
-        output_dir=args.output_dir,
+        output_dir=output_dir,
         num_train_epochs=args.num_epochs,
         per_device_train_batch_size=args.batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
@@ -317,7 +394,7 @@ def train(args):
         remove_unused_columns=False,
         push_to_hub=False,
         label_names=["input_ids", "attention_mask"],
-        evaluation_strategy="steps",
+        eval_strategy="steps",
         eval_steps=500,
         save_steps=500,
         warmup_steps=args.warmup_steps,
@@ -330,8 +407,8 @@ def train(args):
         optim="adamw_8bit",
     )
     
-    # Initialize wandb
-    init_wandb(args)
+    # Initialize TensorBoard
+    writer = init_tensorboard(args)
 
     # Create Trainer instance
     trainer = QwenTrainer(
@@ -342,26 +419,28 @@ def train(args):
         data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=False),
         callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
         max_grad_norm=args.max_grad_norm,
-        tokenizer=tokenizer  # Pass the tokenizer here
+        tokenizer=tokenizer,  # Pass the tokenizer here
+        writer=writer,
+        resume_from_checkpoint=resume_from_checkpoint
 
     )
     
     # Start training
     logger.info("Starting training")
     train_result = trainer.train()
-    
+
     # Save the fine-tuned model
-    logger.info(f"Saving model to {args.output_dir}")
+    logger.info(f"Saving model to {output_dir}")
     trainer.save_model()
-    tokenizer.save_pretrained(args.output_dir)
+    tokenizer.save_pretrained(output_dir)
     
     logger.info(f"Training completed! Steps: {train_result.global_step}, Loss: {train_result.training_loss:.4f}")
-    wandb.finish()
+    writer.close()
 
 # Argument parsing
 def parse_args():
     parser = argparse.ArgumentParser(description="Fine-tune Qwen2 model using QLoRA")
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2-1.5B-Instruct", help="Model name or path")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-Coder-0.5B", help="Model name or path")
     parser.add_argument("--data_path", type=str, required=True, help="Path to the dataset")
     parser.add_argument("--output_dir", type=str, default="./qwen2_arabic_finetuned", help="Output directory")
     parser.add_argument("--num_epochs", type=int, default=3, help="Number of training epochs")
@@ -376,10 +455,23 @@ def parse_args():
     parser.add_argument("--max_steps", type=int, default=10000, help="Max number of training steps")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--test_size", type=float, default=0.1, help="Proportion of data to use for validation")
+    parser.add_argument("--resume", action="store_true", help="Resume training from the latest checkpoint")
     return parser.parse_args()
 
 if __name__ == "__main__":
+    # Set environment variables
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+    # Set Hugging Face cache directory to project models folder
+    models_path = os.path.join(os.getcwd(), 'models')
+    os.environ['HF_HOME'] = os.path.abspath(models_path)
     args = parse_args()
+
+    data_path = args.data_path
+    if not os.path.isabs(data_path):
+        data_path = os.path.join(os.getcwd(), data_path)
+    output_dir = args.output_dir
+    if not os.path.isabs(output_dir):
+        output_dir = os.path.join(os.getcwd(), output_dir)
     
     try:
         train(args)
